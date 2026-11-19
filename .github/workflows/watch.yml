@@ -1,8 +1,11 @@
 name: drop-watcher
 
+# GitHubの定期実行は混雑で間引かれるので、1回の実行の中で
+# 「チェック → 5分待つ」を約5時間45分くり返す。
+# 1時間ごとに次の実行が予約され、前の実行が終わるとすぐ引き継ぐ。
 on:
   schedule:
-    - cron: "*/5 * * * *"   # 5分ごと（GitHubの混雑で数分遅れることあり）
+    - cron: "0 * * * *"
   workflow_dispatch:
     inputs:
       test:
@@ -14,31 +17,40 @@ permissions:
   contents: write
 
 concurrency:
-  group: drop-watcher
+  # テスト通知は監視の実行を待たずにすぐ動くよう、別グループにする
+  group: drop-watcher-${{ inputs.test == true && 'test' || 'main' }}
   cancel-in-progress: false
 
 jobs:
   watch:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 355
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: pip install requests beautifulsoup4
-      - name: Run
+      - name: Watch (5分ごと)
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          PUSHOVER_TOKEN: ${{ secrets.PUSHOVER_TOKEN }}
+          PUSHOVER_USER: ${{ secrets.PUSHOVER_USER }}
         run: |
           if [ "${{ inputs.test }}" = "true" ]; then
             python monitor.py --test
-          else
-            python monitor.py
+            exit 0
           fi
-      - name: Save state
-        run: |
           git config user.name "drop-watcher"
           git config user.email "drop-watcher@users.noreply.github.com"
-          git add state.json || true
-          git diff --cached --quiet || (git commit -m "update state" && git push)
+          end=$((SECONDS + 345*60))
+          while [ $SECONDS -lt $end ]; do
+            echo "=== $(TZ=Asia/Tokyo date '+%m/%d %H:%M') チェック ==="
+            python monitor.py || echo "チェック失敗（次回リトライ）"
+            if [ -n "$(git status --porcelain state.json)" ]; then
+              git add state.json
+              git commit -qm "update state"
+              git pull -q --rebase && git push -q || echo "保存失敗（次回リトライ）"
+            fi
+            sleep 300
+          done
