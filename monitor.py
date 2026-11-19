@@ -48,7 +48,7 @@ def notify(title, message, url=None, priority=1):
             data["url_title"] = "商品ページを開く"
         try:
             r = requests.post("https://api.pushover.net/1/messages.json", data=data, timeout=15)
-            print("  -> pushover:", r.status_code)
+            print("  -> pushover:", r.status_code, "" if r.ok else r.text)
         except requests.RequestException as e:
             print("Pushoverへの送信に失敗:", e)
     if NTFY_TOPIC:
