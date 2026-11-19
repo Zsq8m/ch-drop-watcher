@@ -1,6 +1,6 @@
 """
 Drop Watcher — Chrome Hearts / Matty Boy などのオンラインショップを監視して、
-新商品・再入荷・ページの変化があったらスマホ（ntfyアプリ）に通知する。
+新商品・再入荷・ページの変化があったらスマホ（Pushover / ntfyアプリ）に通知する。
 
 仕組み:
   1. Shopify のサイトなら /products.json を読み、新商品と再入荷を検知
@@ -19,6 +19,8 @@ import requests
 from bs4 import BeautifulSoup
 
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
+PUSHOVER_TOKEN = os.environ.get("PUSHOVER_TOKEN", "")
+PUSHOVER_USER = os.environ.get("PUSHOVER_USER", "")
 STATE_FILE = "state.json"
 SITES_FILE = "sites.json"
 HEADERS = {
@@ -34,18 +36,31 @@ PRODUCT_HINTS = re.compile(r"/(products?|item|items|p)/|\.html($|\?)|pid=", re.I
 IGNORE = re.compile(r"login|account|cart|privacy|terms|policy|contact|location|magazine|instagram", re.I)
 
 
-def notify(title, message, url=None):
+def notify(title, message, url=None, priority=1):
+    """Pushover（メイン）と ntfy（予備）に通知を送る。
+    priority: 0=普通, 1=高（Pushoverの静音時間中も鳴る）"""
     print(f"[NOTIFY] {title}: {message} {url or ''}")
-    if not NTFY_TOPIC:
-        return
-    headers = {"Title": title.encode("utf-8"), "Priority": "urgent", "Tags": "rotating_light"}
-    if url:
-        headers["Click"] = url
-    try:
-        requests.post(f"https://ntfy.sh/{NTFY_TOPIC}", data=message.encode("utf-8"),
-                      headers=headers, timeout=15)
-    except requests.RequestException as e:
-        print("通知の送信に失敗:", e)
+    if PUSHOVER_TOKEN and PUSHOVER_USER:
+        data = {"token": PUSHOVER_TOKEN, "user": PUSHOVER_USER,
+                "title": title, "message": message, "priority": priority}
+        if url:
+            data["url"] = url
+            data["url_title"] = "商品ページを開く"
+        try:
+            r = requests.post("https://api.pushover.net/1/messages.json", data=data, timeout=15)
+            print("  -> pushover:", r.status_code)
+        except requests.RequestException as e:
+            print("Pushoverへの送信に失敗:", e)
+    if NTFY_TOPIC:
+        headers = {"Title": title.encode("utf-8"), "Priority": "urgent", "Tags": "rotating_light"}
+        if url:
+            headers["Click"] = url
+        try:
+            r = requests.post(f"https://ntfy.sh/{NTFY_TOPIC}", data=message.encode("utf-8"),
+                              headers=headers, timeout=15)
+            print("  -> ntfy:", r.status_code)
+        except requests.RequestException as e:
+            print("ntfyへの送信に失敗:", e)
 
 
 def fetch(url):
@@ -128,8 +143,14 @@ def main():
                 new_links = [u for u in links if u not in old["links"]]
                 for u in new_links[:5]:
                     notify(f"🆕 {name} 新しい商品リンク", links[u] or u, u)
-                if not new_links and digest != old["hash"]:
-                    notify(f"👀 {name} ページが更新", "ショップページの内容が変わりました", url)
+                # 売り切れ表示が消えた商品 = 再入荷
+                restocked = [u for u in links if u in old["links"]
+                             and "OUT OF STOCK" in old["links"][u].upper()
+                             and "OUT OF STOCK" not in links[u].upper()]
+                for u in restocked[:5]:
+                    notify(f"🔥 {name} 再入荷", f"{links[u]}  {u.rsplit('/', 1)[-1]}", u)
+                if not new_links and not restocked and digest != old["hash"]:
+                    notify(f"👀 {name} ページが更新", "ショップページの内容が変わりました", url, priority=0)
             state[url] = {"links": links, "hash": digest}
 
     with open(STATE_FILE, "w", encoding="utf-8") as f:
