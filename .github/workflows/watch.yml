@@ -46,6 +46,7 @@ jobs:
           end=$((SECONDS + 345*60))
           while [ $SECONDS -lt $end ]; do
             echo "=== $(TZ=Asia/Tokyo date '+%m/%d %H:%M') チェック ==="
+            git pull -q --rebase || true   # プログラムの更新をすぐ反映
             python monitor.py || echo "チェック失敗（次回リトライ）"
             if [ -n "$(git status --porcelain state.json)" ]; then
               git add state.json
