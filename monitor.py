@@ -69,6 +69,16 @@ def fetch(url):
     return r
 
 
+def is_locked(base):
+    """パスワードで閉じているShopifyなら True、開いていれば False、取得失敗なら None"""
+    root = f"{urlparse(base).scheme}://{urlparse(base).netloc}"
+    try:
+        r = requests.get(root + "/", headers=HEADERS, timeout=25)
+    except requests.RequestException:
+        return None
+    return "/password" in urlparse(r.url).path
+
+
 def try_shopify(base):
     """Shopifyサイトなら {商品ID: {title, url, available}} を返す。違えば None。"""
     root = f"{urlparse(base).scheme}://{urlparse(base).netloc}"
@@ -119,12 +129,24 @@ def main():
 
     for site in sites:
         name = site["name"]
+        lock_key = f"locked::{name}"
+        known_site = lock_key in state  # 前回までに一度でもチェックしたサイトか
+        locked = is_locked(site["urls"][0])
+        if locked is not None:
+            if state.get(lock_key) is True and not locked:
+                notify(f"🔓 {name} ショップがオープン", "パスワードが外れました！今すぐチェック", site["urls"][0])
+            state[lock_key] = locked
+            if locked:
+                print(f"{name}: パスワードで閉じています")
+                continue
         shop = try_shopify(site["urls"][0])
         if shop is not None:
             key = f"shopify::{name}"
             old = state.get(key)
+            if old is None and known_site:
+                old = {}  # オープン直後など、初めて商品が見えた → 全部「新商品」として通知
             if old is not None:
-                for pid, p in shop.items():
+                for pid, p in list(shop.items())[:10] if not old else shop.items():
                     if pid not in old:
                         notify(f"🆕 {name} 新商品", p["title"], p["url"])
                     elif p["available"] and not old[pid]["available"]:
