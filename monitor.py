@@ -63,6 +63,10 @@ def notify(title, message, url=None, priority=1):
             print("ntfyへの送信に失敗:", e)
 
 
+class TemporaryError(Exception):
+    """アクセス制限などの一時的なエラー"""
+
+
 def fetch(url):
     r = requests.get(url, headers=HEADERS, timeout=25)
     r.raise_for_status()
@@ -76,6 +80,9 @@ def is_locked(base):
         r = requests.get(root + "/", headers=HEADERS, timeout=25)
     except requests.RequestException:
         return None
+    if r.status_code != 200:  # 429（アクセス多すぎ）などは「わからない」扱い
+        print(f"{root} の確認に失敗: {r.status_code}（次回リトライ）")
+        return None
     return "/password" in urlparse(r.url).path
 
 
@@ -84,6 +91,11 @@ def try_shopify(base):
     root = f"{urlparse(base).scheme}://{urlparse(base).netloc}"
     try:
         r = requests.get(f"{root}/products.json?limit=250", headers=HEADERS, timeout=25)
+    except requests.RequestException as e:
+        raise TemporaryError(e)
+    if r.status_code == 429 or r.status_code >= 500:
+        raise TemporaryError(r.status_code)
+    try:
         data = r.json()
     except Exception:
         return None
@@ -132,14 +144,19 @@ def main():
         lock_key = f"locked::{name}"
         known_site = lock_key in state  # 前回までに一度でもチェックしたサイトか
         locked = is_locked(site["urls"][0])
-        if locked is not None:
-            if state.get(lock_key) is True and not locked:
-                notify(f"🔓 {name} ショップがオープン", "パスワードが外れました！今すぐチェック", site["urls"][0])
-            state[lock_key] = locked
-            if locked:
-                print(f"{name}: パスワードで閉じています")
-                continue
-        shop = try_shopify(site["urls"][0])
+        if locked is None:
+            continue  # 今回は確認できなかったので、次の5分後にやり直す
+        if state.get(lock_key) is True and not locked:
+            notify(f"🔓 {name} ショップがオープン", "パスワードが外れました！今すぐチェック", site["urls"][0])
+        state[lock_key] = locked
+        if locked:
+            print(f"{name}: パスワードで閉じています")
+            continue
+        try:
+            shop = try_shopify(site["urls"][0])
+        except TemporaryError as e:
+            print(f"{name}: 一時的に取得できず（{e}）次回リトライ")
+            continue
         if shop is not None:
             key = f"shopify::{name}"
             old = state.get(key)
