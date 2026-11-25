@@ -105,7 +105,7 @@
  },
  "locked::ANTI PROMO (Matty Boy)": false,
  "locked::Chrome Hearts": false,
- "locked::Jarod John Leonard": false,
+ "locked::Jarod John Leonard": true,
  "shopify::ANTI PROMO (Matty Boy)": {
   "15502786003198": {
    "available": false,
